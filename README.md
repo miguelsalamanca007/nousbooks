@@ -8,7 +8,7 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Flyway-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![License](https://img.shields.io/badge/license-TBD-lightgrey)](#license)
 
-> A full-stack application to manage your personal library: search books on Google Books, organize your reading in a kanban board, track progress, take notes and visualize your stats.
+> A full-stack application to manage your personal library: search books on Google Books, organize your reading in a kanban board, track progress, capture highlights with **AI-powered semantic search**, take notes and visualize your stats.
 
 🌐 **Demo:** [nousbooks.vercel.app](https://nousbooks.vercel.app)
 
@@ -43,6 +43,8 @@
 | Migrations | Flyway (PostgreSQL) |
 | Security | Spring Security · JJWT 0.12 |
 | OAuth | google-api-client (ID token verification) |
+| AI / Embeddings | Google Gemini (`gemini-embedding-001`, 768-dim) · pgvector |
+| API docs | springdoc-openapi (Swagger UI) |
 | Build | Maven Wrapper |
 
 ### Frontend
@@ -95,6 +97,13 @@ npm run dev
 
 The Next.js app starts at `http://localhost:3000` and points to the local backend by default.
 
+### API documentation (Swagger)
+
+Interactive OpenAPI docs are served by the backend:
+
+- **Swagger UI** → `http://localhost:8080/swagger-ui.html`
+- **OpenAPI spec** → `http://localhost:8080/v3/api-docs`
+
 ### Packaging / Docker
 
 ```bash
@@ -125,6 +134,7 @@ docker run -p 8080:8080 \
 | `APP_JWT_SECRET` | dev key | **Required in prod.** Base64 ≥ 256 bits |
 | `GOOGLE_BOOKS_API_KEY` | empty | Recommended to avoid the anonymous rate limit |
 | `GOOGLE_OAUTH_CLIENT_ID` | empty | Google Client ID (must match the frontend's) |
+| `GEMINI_API_KEY` | empty | Powers semantic search over highlights. When unset, highlights still save but semantic search returns empty |
 | `FRONTEND_URL` | `https://*.vercel.app,http://localhost:3000` | Comma-separated CORS origins |
 
 ### Environment variables (frontend)
@@ -136,15 +146,29 @@ docker run -p 8080:8080 \
 
 ## Database migrations
 
-The schema is owned by **Flyway** from `src/main/resources/db/migration/`. Hibernate runs in `validate` mode, so any drift between JPA entities and the schema breaks startup — that's intentional.
+The schema is owned by **Flyway**. Hibernate runs in `validate` mode, so any drift between JPA entities and the schema breaks startup — that's intentional.
 
 Naming convention: `V{n}__{snake_case_description}.sql`.
+
+### Multi-vendor layout
+
+Because dev runs on **H2** and prod on **PostgreSQL**, migrations are split:
+
+```
+db/migration/          # cross-vendor migrations (run on both H2 and Postgres)
+db/vendor/postgresql/  # Postgres-only — e.g. V10 adds a pgvector column + HNSW index
+db/vendor/h2/          # H2-only equivalents — e.g. V10 without the embedding column
+```
+
+The location set is `classpath:db/migration,classpath:db/vendor/{vendor}`, where `{vendor}` resolves to the active database. `spring.flyway.out-of-order=true` lets vendor-specific migrations slot in after newer common ones. A `FlywayMigrationStrategy` runs `repair()` before each `migrate()` to clear failed history entries and realign checksums when a file moves between vendor folders.
+
+> The pgvector `embedding` column (and thus semantic search over highlights) only exists in the Postgres variant; the H2 dev variant omits it, so highlights save fine locally but semantic search is a no-op in dev.
 
 ## Deployment
 
 - **Frontend → Vercel.** Auto-deploys from `main`. Set `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_GOOGLE_CLIENT_ID` in the Vercel dashboard (Project → Settings → Environment Variables) so they're baked into each production build.
-- **Backend → Render.** Docker image built from the `Dockerfile`. Required variables: `SPRING_PROFILES_ACTIVE=prod`, database credentials, `APP_JWT_SECRET`, `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_BOOKS_API_KEY` and optionally `FRONTEND_URL`.
-- **Database → Render Postgres.** Flyway applies migrations on startup.
+- **Backend → Render.** Docker image built from the `Dockerfile`. Required variables: `SPRING_PROFILES_ACTIVE=prod`, database credentials, `APP_JWT_SECRET`, `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_BOOKS_API_KEY`, `GEMINI_API_KEY` (for highlight semantic search) and optionally `FRONTEND_URL`.
+- **Database → Render Postgres** with the **pgvector** extension enabled (used by the highlights `embedding` column). Flyway applies migrations on startup.
 
 ## CI
 
@@ -161,6 +185,7 @@ Naming convention: `V{n}__{snake_case_description}.sql`.
 - 📈 **Reading progress**: track pages read and current page for books in progress.
 - ⭐ **Ratings** with a star system.
 - 📝 **Notes** attached to each book, listable and editable.
+- ✨ **Highlights** captured per book (text, optional note and page number), with **semantic search** across all your highlights powered by Google Gemini embeddings (`gemini-embedding-001`) stored as pgvector and queried via an HNSW index. Embeddings are generated fire-and-forget and a scheduled sweep retries any that are still missing.
 - 📊 **Personal stats** (charts powered by Recharts).
 - 👤 **User profile** with profile editing, password change and persistent **light/dark theme**.
 - 🌐 **Book detail modal** shared between search results and the library.
@@ -197,15 +222,19 @@ Naming convention: `V{n}__{snake_case_description}.sql`.
 └────┬─────┘        └─────────────┘        └─────┬────┘
      │              status, rating, review,      │
      │              progress, dates              │
-     │                                           │
-     └──────────────<│  notes   │>───────────────┘
-                     └──────────┘
+     │              ┌────────────┐                │
+     ├──────────────<│   notes    │>──────────────┤
+     │              └────────────┘                │
+     │              ┌────────────┐                │
+     └──────────────<│ highlights │>──────────────┘
+                     └────────────┘
 ```
 
 - **users** — local credentials (BCrypt-hashed `password`) and/or Google OAuth link, plus a `role` (USER/ADMIN).
 - **books** — local cache of books imported from Google Books (`google_books_id` unique).
 - **user_books** — N:M relation with reading status (`TO_READ`, `READING`, `READ`), rating, review, start/finish dates, total page count and current page. Unique per `(user_id, book_id)`.
 - **notes** — personal annotations attached to a book.
+- **highlights** — passages saved from a book (`text`, optional `note` and `page_number`), each tied to a user and a book. In Postgres they carry a `vector(768)` `embedding` column (Gemini) indexed with HNSW for semantic search.
 
 Relevant enums: `ReadingStatus`, `Role`, `OrderBy`, `PrintType`.
 
@@ -252,6 +281,16 @@ All endpoints live under `/api`. Except for `/api/auth/*`, they require `Authori
 | `GET` | `/{id}` | Note detail |
 | `PATCH` | `/{id}` | Edit note |
 | `DELETE` | `/{id}` | Delete note |
+
+### Highlights — `/api/highlights`
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/` | Create a highlight (embedding generated async) |
+| `GET` | `/` | List all my highlights |
+| `GET` | `/by-book/{bookId}` | Highlights for a given book |
+| `GET` | `/search?q=` | Semantic search across my highlights |
+| `PATCH` | `/{id}` | Edit a highlight (re-embeds on text change) |
+| `DELETE` | `/{id}` | Delete a highlight |
 
 ### Stats — `/api/stats`
 | Method | Path | Description |
