@@ -81,6 +81,21 @@ export default function BookDetailModal({
                     setCoverSrc(book.thumbnail);
                   }
                 }}
+                onLoad={(e) => {
+                  // Google Books returns its "image not available" placeholder
+                  // with HTTP 200, so onError won't fire. The placeholder is
+                  // narrow (~128px); real zoom=0 covers are at least ~300px.
+                  // Fall back to the original thumbnail if we got the stub.
+                  const img = e.currentTarget;
+                  if (
+                    img.naturalWidth > 0 &&
+                    img.naturalWidth < 200 &&
+                    book.thumbnail &&
+                    coverSrc !== book.thumbnail
+                  ) {
+                    setCoverSrc(book.thumbnail);
+                  }
+                }}
                 className="rounded-xl object-cover shadow-2xl shadow-amber-900/30 ring-1 ring-black/10"
               />
             </div>
