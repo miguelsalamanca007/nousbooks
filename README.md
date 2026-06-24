@@ -40,7 +40,7 @@
 | Framework | Spring Boot 3.5 |
 | Web | Spring Web MVC |
 | Persistence | Spring Data JPA · Hibernate |
-| Migrations | Flyway (PostgreSQL) |
+| Migrations | Flyway (multi-vendor: H2 dev · PostgreSQL prod) |
 | Security | Spring Security · JJWT 0.12 |
 | OAuth | google-api-client (ID token verification) |
 | AI / Embeddings | Google Gemini (`gemini-embedding-001`, 768-dim) · pgvector |
@@ -74,7 +74,7 @@
 - **JDK 17+**
 - **Node.js 20+** (npm)
 - **Git**
-- Optional: **Docker** (for production builds) and **PostgreSQL** (not needed in dev — H2 is used in-memory)
+- Optional: **Docker** (for production builds) and **PostgreSQL** (not needed in dev — a file-based H2 database is used)
 
 ### Backend
 
@@ -85,7 +85,7 @@ cd nousbooks
 ./mvnw spring-boot:run
 ```
 
-The backend starts at `http://localhost:8080` with the `dev` profile active and H2 in-memory. The **H2 console** is available at `http://localhost:8080/h2-console` (JDBC URL `jdbc:h2:mem:nousbooks`, user `sa`, no password).
+The backend starts at `http://localhost:8080` with the `dev` profile active (the default) and a file-based H2 database in PostgreSQL-compatibility mode, persisted to `./data/nousbooks`. The **H2 console** is available at `http://localhost:8080/h2-console` (JDBC URL `jdbc:h2:file:./data/nousbooks`, user `sa`, no password).
 
 ### Frontend
 
@@ -180,9 +180,9 @@ The location set is `classpath:db/migration,classpath:db/vendor/{vendor}`, where
 ## Features
 
 - 🔐 **Authentication** with email/password (JWT) and **Sign-In with Google** (ID token verification on the backend).
-- 🔎 **Book search** through the **Google Books API**, with quick results, a full results page, and **advanced search** (filters by author, publisher, ISBN, language, print type, ordering, etc.).
+- 🔎 **Book search** through the **Google Books API**, with quick results, a full results page, and **advanced search** (filters by author, publisher, subject, print type and ordering, with paging).
 - 📚 **My library**: add books to your collection and move them between *To read*, *Reading* and *Read* states (drag-and-drop kanban).
-- 📈 **Reading progress**: track pages read and current page for books in progress.
+- 📈 **Reading progress**: track your current page against the book's total page count for books in progress.
 - ⭐ **Ratings** with a star system.
 - 📝 **Notes** attached to each book, listable and editable.
 - ✨ **Highlights** captured per book (text, optional note and page number), with **semantic search** across all your highlights powered by Google Gemini embeddings (`gemini-embedding-001`) stored as pgvector and queried via an HNSW index. Embeddings are generated fire-and-forget and a scheduled sweep retries any that are still missing.
@@ -231,8 +231,8 @@ The location set is `classpath:db/migration,classpath:db/vendor/{vendor}`, where
 ```
 
 - **users** — local credentials (BCrypt-hashed `password`) and/or Google OAuth link, plus a `role` (USER/ADMIN).
-- **books** — local cache of books imported from Google Books (`google_books_id` unique).
-- **user_books** — N:M relation with reading status (`TO_READ`, `READING`, `READ`), rating, review, start/finish dates, total page count and current page. Unique per `(user_id, book_id)`.
+- **books** — local cache of books imported from Google Books (`google_books_id` unique), including title, description, thumbnail, authors, publisher, published date and total `page_count`.
+- **user_books** — N:M relation with reading status (`TO_READ`, `READING`, `READ`), rating, review, start/finish dates and current page (reading progress). Unique per `(user_id, book_id)`.
 - **notes** — personal annotations attached to a book.
 - **highlights** — passages saved from a book (`text`, optional `note` and `page_number`), each tied to a user and a book. In Postgres they carry a `vector(768)` `embedding` column (Gemini) indexed with HNSW for semantic search.
 
@@ -259,10 +259,10 @@ All endpoints live under `/api`. Except for `/api/auth/*`, they require `Authori
 ### Books — `/api/books`
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/search` | Search Google Books (simple and advanced) |
-| `POST` | `/` | Create/import a book |
-| `GET` | `/` | List books |
+| `GET` | `/search` | Search Google Books (`q`, `author`, `publisher`, `subject`, `printType`, `orderBy`, `page`, `size`) |
 | `GET` | `/{id}` | Book detail |
+| `POST` | `/` | Create a book — **ADMIN only** (catalogue is normally populated lazily via `/api/user-books`) |
+| `GET` | `/` | List the whole catalogue — **ADMIN only** |
 
 ### My library — `/api/user-books`
 | Method | Path | Description |
