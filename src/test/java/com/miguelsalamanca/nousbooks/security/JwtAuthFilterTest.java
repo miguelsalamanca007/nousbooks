@@ -22,6 +22,7 @@ import com.miguelsalamanca.nousbooks.model.User;
 import com.miguelsalamanca.nousbooks.support.TestData;
 
 import io.jsonwebtoken.ExpiredJwtException;
+import io.jsonwebtoken.MalformedJwtException;
 import jakarta.servlet.http.HttpServletResponse;
 
 @ExtendWith(MockitoExtension.class)
@@ -112,6 +113,29 @@ class JwtAuthFilterTest {
         filter.doFilter(request, response, chain);
 
         assertThat(response.getStatus()).isEqualTo(HttpServletResponse.SC_UNAUTHORIZED);
+        assertThat(response.getContentType()).startsWith("application/json");
+        assertThat(response.getContentAsString())
+                .isEqualTo("{\"message\":\"Invalid or expired token\"}");
         assertThat(chain.getRequest()).isNull();
+    }
+
+    @Test
+    void doFilterInternal_responds401OnMalformedToken() throws Exception {
+        when(jwtService.extractUsername("malformed"))
+                .thenThrow(new MalformedJwtException("bad token"));
+
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader("Authorization", "Bearer malformed");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+
+        filter.doFilter(request, response, chain);
+
+        assertThat(response.getStatus()).isEqualTo(HttpServletResponse.SC_UNAUTHORIZED);
+        assertThat(response.getContentType()).startsWith("application/json");
+        assertThat(response.getContentAsString())
+                .isEqualTo("{\"message\":\"Invalid or expired token\"}");
+        assertThat(chain.getRequest()).isNull();
+        verify(userDetailsService, never()).loadUserByUsername(any());
     }
 }

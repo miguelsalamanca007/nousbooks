@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import io.jsonwebtoken.ExpiredJwtException;
+import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -52,12 +53,24 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                     SecurityContextHolder.getContext().setAuthentication(authToken);
                 }
             }
-        } catch (ExpiredJwtException e) {
-            log.debug("Rejected expired JWT on {} {}", request.getMethod(), request.getRequestURI());
-            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+        } catch (JwtException e) {
+            // A malformed, tampered, or expired bearer token is an authentication
+            // failure, never an application error. Clear any partial context and
+            // return the same response shape used by the REST API.
+            SecurityContextHolder.clearContext();
+            log.debug("Rejected JWT on {} {}: {}", request.getMethod(), request.getRequestURI(),
+                    e instanceof ExpiredJwtException ? "expired" : "invalid");
+            writeUnauthorized(response);
             return;
         }
 
         chain.doFilter(request, response);
+    }
+
+    private void writeUnauthorized(HttpServletResponse response) throws IOException {
+        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+        response.setContentType("application/json");
+        response.setCharacterEncoding("UTF-8");
+        response.getWriter().write("{\"message\":\"Invalid or expired token\"}");
     }
 }
